@@ -197,20 +197,9 @@ func Packages(context *generator.Context, arguments *args.GeneratorArgs) generat
 		orderer := namer.Orderer{Namer: namer.NewPrivateNamer(0)}
 		typesToGenerate = orderer.OrderTypes(typesToGenerate)
 
-		// TODO: factory needs
-		/*
-			cachingClientSetPackage   string
-			sharedInformerFactoryPackage string
-
-			informers "github.com/knative/serving/pkg/client/informers/externalversions"
-
-			"github.com/knative/pkg/injection"
-			"github.com/knative/serving/pkg/injection/clients/servingclient"
-		*/
-
 		packageList = append(packageList, versionInformerPackages(versionPackagePath, groupPackageName, gv, groupGoNames[groupPackageName], boilerplate, typesToGenerate, customArgs.VersionedClientSetPackage)...)
-		packageList = append(packageList, versionClientsPackages(versionPackagePath, groupPackageName, gv, groupGoNames[groupPackageName], boilerplate, typesToGenerate, customArgs.VersionedClientSetPackage)...)
-		packageList = append(packageList, versionFactoryPackages(versionPackagePath, groupPackageName, gv, groupGoNames[groupPackageName], boilerplate, typesToGenerate, customArgs.VersionedClientSetPackage)...)
+		packageList = append(packageList, versionClientsPackages(versionPackagePath, groupPackageName, gv, groupGoNames[groupPackageName], boilerplate, typesToGenerate, customArgs.VersionedClientSetPackage))
+		packageList = append(packageList, versionFactoryPackages(versionPackagePath, groupPackageName, gv, groupGoNames[groupPackageName], boilerplate, typesToGenerate, customArgs.VersionedClientSetPackage))
 	}
 
 	return packageList
@@ -227,14 +216,33 @@ func versionInformerPackages(basePackage string, groupPkgName string, gv clientg
 
 		t := t
 
+		// Impl
 		vers = append(vers, &generator.DefaultPackage{
 			PackageName: strings.ToLower(t.Name.Name),
 			PackagePath: packagePath,
 			HeaderText:  boilerplate,
 			GeneratorFunc: func(c *generator.Context) (generators []generator.Generator) {
+				// Impl
 				generators = append(generators, &injectionGenerator{
 					DefaultGen: generator.DefaultGen{
 						OptionalName: strings.ToLower(t.Name.Name),
+					},
+					outputPackage:               packagePath,
+					groupPkgName:                groupPkgName,
+					groupVersion:                gv,
+					groupGoName:                 groupGoName,
+					typeToGenerate:              t,
+					imports:                     generator.NewImportTracker(),
+					clientSetPackage:            clientSetPackage,
+					internalInterfacesPackage:   packageForInternalInterfaces(basePackage),
+					typedInformerPackage:        strings.Replace(clientSetPackage, "clientset/versioned", "informers/externalversions", 1) + fmt.Sprintf("/%s/%s", strings.ToLower(gv.Group.NonEmpty())[:strings.Index(gv.Group.NonEmpty(), ".")], gv.Version),
+					groupInformerFactoryPackage: fmt.Sprintf("%s/informers/%s/factory", basePackage, strings.ToLower(groupGoName)),
+				})
+
+				// Test
+				generators = append(generators, &injectionTestGenerator{
+					DefaultGen: generator.DefaultGen{
+						OptionalName: strings.ToLower(t.Name.Name)+"_test",
 					},
 					outputPackage:               packagePath,
 					groupPkgName:                groupPkgName,
@@ -259,19 +267,31 @@ func versionInformerPackages(basePackage string, groupPkgName string, gv clientg
 	return vers
 }
 
-func versionFactoryPackages(basePackage string, groupPkgName string, gv clientgentypes.GroupVersion, groupGoName string, boilerplate []byte, typesToGenerate []*types.Type, clientSetPackage string) []generator.Package {
+func versionFactoryPackages(basePackage string, groupPkgName string, gv clientgentypes.GroupVersion, groupGoName string, boilerplate []byte, typesToGenerate []*types.Type, clientSetPackage string) generator.Package {
 	packagePath := filepath.Join(basePackage, "informers", groupPkgName, "factory")
 
-	vers := []generator.Package(nil)
-
-	vers = append(vers, &generator.DefaultPackage{
+	return &generator.DefaultPackage{
 		PackageName: strings.ToLower(groupPkgName + "factory"),
 		PackagePath: packagePath,
 		HeaderText:  boilerplate,
 		GeneratorFunc: func(c *generator.Context) (generators []generator.Generator) {
+			// Impl
 			generators = append(generators, &factoryGenerator{
 				DefaultGen: generator.DefaultGen{
 					OptionalName: groupPkgName + "factory",
+				},
+				outputPackage:                packagePath,
+				cachingClientSetPackage:      fmt.Sprintf("%s/clients/%s", basePackage, groupPkgName),
+				sharedInformerFactoryPackage: strings.Replace(clientSetPackage, "clientset/versioned", "informers/externalversions", 1),
+				imports:                      generator.NewImportTracker(),
+				clientSetPackage:             clientSetPackage,
+				internalInterfacesPackage:    packageForInternalInterfaces(basePackage),
+			})
+
+			// Test
+			generators = append(generators, &factoryTestGenerator{
+				DefaultGen: generator.DefaultGen{
+					OptionalName: groupPkgName + "factory_test",
 				},
 				outputPackage:                packagePath,
 				cachingClientSetPackage:      fmt.Sprintf("%s/clients/%s", basePackage, groupPkgName),
@@ -287,23 +307,33 @@ func versionFactoryPackages(basePackage string, groupPkgName string, gv clientge
 			tags := util.MustParseClientGenTags(append(t.SecondClosestCommentLines, t.CommentLines...))
 			return tags.GenerateClient && tags.HasVerb("list") && tags.HasVerb("watch")
 		},
-	})
-	return vers
+	}
 }
 
-func versionClientsPackages(basePackage string, groupPkgName string, gv clientgentypes.GroupVersion, groupGoName string, boilerplate []byte, typesToGenerate []*types.Type, clientSetPackage string) []generator.Package {
+func versionClientsPackages(basePackage string, groupPkgName string, gv clientgentypes.GroupVersion, groupGoName string, boilerplate []byte, typesToGenerate []*types.Type, clientSetPackage string) generator.Package {
 	packagePath := filepath.Join(basePackage, "clients", groupPkgName)
 
-	vers := []generator.Package(nil)
-
-	vers = append(vers, &generator.DefaultPackage{
+	// Impl
+	return &generator.DefaultPackage{
 		PackageName: strings.ToLower(groupPkgName + "client"),
 		PackagePath: packagePath,
 		HeaderText:  boilerplate,
 		GeneratorFunc: func(c *generator.Context) (generators []generator.Generator) {
+			// Impl
 			generators = append(generators, &clientGenerator{
 				DefaultGen: generator.DefaultGen{
 					OptionalName: groupPkgName + "client",
+				},
+				outputPackage:             packagePath,
+				imports:                   generator.NewImportTracker(),
+				clientSetPackage:          clientSetPackage,
+				internalInterfacesPackage: packageForInternalInterfaces(basePackage),
+			})
+
+			// Test
+			generators = append(generators, &clientTestGenerator{
+				DefaultGen: generator.DefaultGen{
+					OptionalName: groupPkgName + "client_test",
 				},
 				outputPackage:             packagePath,
 				imports:                   generator.NewImportTracker(),
@@ -317,6 +347,5 @@ func versionClientsPackages(basePackage string, groupPkgName string, gv clientge
 			tags := util.MustParseClientGenTags(append(t.SecondClosestCommentLines, t.CommentLines...))
 			return tags.GenerateClient && tags.HasVerb("list") && tags.HasVerb("watch")
 		},
-	})
-	return vers
+	}
 }

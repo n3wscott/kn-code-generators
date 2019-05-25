@@ -30,7 +30,7 @@ import (
 
 // factoryTestGenerator produces a file of listers for a given GroupVersion and
 // type.
-type factoryGenerator struct {
+type factoryTestGenerator struct {
 	generator.DefaultGen
 	outputPackage                string
 	imports                      namer.ImportTracker
@@ -43,9 +43,9 @@ type factoryGenerator struct {
 	filtered                     bool
 }
 
-var _ generator.Generator = &factoryGenerator{}
+var _ generator.Generator = &factoryTestGenerator{}
 
-func (g *factoryGenerator) Filter(c *generator.Context, t *types.Type) bool {
+func (g *factoryTestGenerator) Filter(c *generator.Context, t *types.Type) bool {
 	if !g.filtered {
 		g.filtered = true
 		return true
@@ -53,18 +53,18 @@ func (g *factoryGenerator) Filter(c *generator.Context, t *types.Type) bool {
 	return false
 }
 
-func (g *factoryGenerator) Namers(c *generator.Context) namer.NameSystems {
+func (g *factoryTestGenerator) Namers(c *generator.Context) namer.NameSystems {
 	return namer.NameSystems{
 		"raw": namer.NewRawNamer(g.outputPackage, g.imports),
 	}
 }
 
-func (g *factoryGenerator) Imports(c *generator.Context) (imports []string) {
+func (g *factoryTestGenerator) Imports(c *generator.Context) (imports []string) {
 	imports = append(imports, g.imports.ImportLines()...)
 	return
 }
 
-func (g *factoryGenerator) GenerateType(c *generator.Context, t *types.Type, w io.Writer) error {
+func (g *factoryTestGenerator) GenerateType(c *generator.Context, t *types.Type, w io.Writer) error {
 	sw := generator.NewSnippetWriter(w, c, "{{", "}}")
 
 	klog.V(5).Infof("processing type %v", t)
@@ -104,57 +104,33 @@ func (g *factoryGenerator) GenerateType(c *generator.Context, t *types.Type, w i
 	return sw.Error()
 }
 
-var injectionFactory = `
-func init() {
-	{{.injectionRegisterInformerFactory|raw}}(withInformerFactory)
-}
+var injectionFactoryTest = `
+func TestRegistration(t *testing.T) {
+	ctx := context.Background()
 
-// key is used as the key for associating information with a context.Context.
-type Key struct{}
+	// Get before registration
+	if empty := Get(ctx); empty != nil {
+		t.Errorf("Unexpected informer factory: %v", empty)
+	}
 
-func withInformerFactory(ctx context.Context, resyncPeriod {{.timeDuration|raw}}) context.Context {
-	sc := {{.cachingClientGet|raw}}(ctx)
-	return context.WithValue(ctx, Key{}, {{.informersNewSharedInformerFactory|raw}}(sc, resyncPeriod))
-}
+	// Check how many informer factories have registered.
+	inffs := injection.Default.GetInformerFactories()
+	if want, got := 1, len(inffs); want != got {
+		t.Errorf("GetInformerFactories() = %d, wanted %d", want, got)
+	}
 
-// Get extracts the InformerFactory from the context.
-func Get(ctx context.Context) {{.informersSharedInformerFactory|raw}} {
-	return ctx.Value(Key{}).({{.informersSharedInformerFactory|raw}})
+	// Setup the informers.
+	var infs []controller.Informer
+	ctx, infs = injection.Default.SetupInformers(ctx, &rest.Config{})
+
+	// We should see that a single informer was set up.
+	if want, got := 0, len(infs); want != got {
+		t.Errorf("SetupInformers() = %d, wanted %d", want, got)
+	}
+
+	// Get our informer from the context.
+	if inf := Get(ctx); inf == nil {
+		t.Error("Get() = nil, wanted non-nil")
+	}
 }
 `
-
-/*
-
-
-import (
-	"context"
-	"time"
-
-cachingClientSetPackage   string
-	sharedInformerFactoryPackage string
-
-	informers "github.com/knative/serving/pkg/client/informers/externalversions"
-
-	"github.com/knative/pkg/injection"
-	"github.com/knative/serving/pkg/injection/clients/servingclient"
-)
-
-func init() {
-	injection.RegisterInformerFactory(withServingInformerFactory)
-}
-
-// servingInformerFactoryKey is used as the key for associating information
-// with a context.Context.
-type servingInformerFactoryKey struct{}
-
-func withServingInformerFactory(ctx context.Context, resyncPeriod time.Duration) context.Context {
-	sc := servingclient.Get(ctx)
-	return context.WithValue(ctx, servingInformerFactoryKey{},
-		informers.NewSharedInformerFactory(sc, resyncPeriod))
-}
-
-// Get extracts the Serving InformerFactory from the context.
-func Get(ctx context.Context) informers.SharedInformerFactory {
-	return ctx.Value(servingInformerFactoryKey{}).(informers.SharedInformerFactory)
-}
-*/

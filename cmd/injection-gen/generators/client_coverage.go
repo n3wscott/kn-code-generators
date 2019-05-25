@@ -29,7 +29,7 @@ import (
 
 // factoryTestGenerator produces a file of listers for a given GroupVersion and
 // type.
-type clientGenerator struct {
+type clientTestGenerator struct {
 	generator.DefaultGen
 	outputPackage             string
 	imports                   namer.ImportTracker
@@ -40,9 +40,9 @@ type clientGenerator struct {
 	filtered                  bool
 }
 
-var _ generator.Generator = &clientGenerator{}
+var _ generator.Generator = &clientTestGenerator{}
 
-func (g *clientGenerator) Filter(c *generator.Context, t *types.Type) bool {
+func (g *clientTestGenerator) Filter(c *generator.Context, t *types.Type) bool {
 	if !g.filtered {
 		g.filtered = true
 		return true
@@ -50,18 +50,18 @@ func (g *clientGenerator) Filter(c *generator.Context, t *types.Type) bool {
 	return false
 }
 
-func (g *clientGenerator) Namers(c *generator.Context) namer.NameSystems {
+func (g *clientTestGenerator) Namers(c *generator.Context) namer.NameSystems {
 	return namer.NameSystems{
 		"raw": namer.NewRawNamer(g.outputPackage, g.imports),
 	}
 }
 
-func (g *clientGenerator) Imports(c *generator.Context) (imports []string) {
+func (g *clientTestGenerator) Imports(c *generator.Context) (imports []string) {
 	imports = append(imports, g.imports.ImportLines()...)
 	return
 }
 
-func (g *clientGenerator) GenerateType(c *generator.Context, t *types.Type, w io.Writer) error {
+func (g *clientTestGenerator) GenerateType(c *generator.Context, t *types.Type, w io.Writer) error {
 	sw := generator.NewSnippetWriter(w, c, "{{", "}}")
 
 	klog.V(5).Infof("processing type %v", t)
@@ -94,25 +94,41 @@ func (g *clientGenerator) GenerateType(c *generator.Context, t *types.Type, w io
 		"restConfig":                     c.Universe.Type(types.Name{Package: "k8s.io/client-go/rest", Name: "Config"}),
 	}
 
-	sw.Do(injectionClient, m)
+	sw.Do(injectionClientTest, m)
 
 	return sw.Error()
 }
 
-var injectionClient = `
-func init() {
-	{{.injectionRegisterClient|raw}}(withClient)
-}
 
-// key is used as the key for associating information with a context.Context.
-type Key struct{}
+// TODO: templatize this:
 
-func withClient(ctx context.Context, cfg *{{.restConfig|raw}}) context.Context {
-	return context.WithValue(ctx, Key{}, {{.clientSetNewForConfigOrDie|raw}}(cfg))
-}
+var injectionClientTest = `
+func TestRegistration(t *testing.T) {
+	ctx := context.Background()
 
-// Get extracts the {{.name}} client from the context.
-func Get(ctx context.Context) {{.clientSetInterface|raw}} {
-	return ctx.Value(Key{}).({{.clientSetInterface|raw}})
+	// Get before registration
+	if empty := Get(ctx); empty != nil {
+		t.Errorf("Unexpected informer: %v", empty)
+	}
+
+	// Check how many informers have registered.
+	inffs := injection.Default.GetClients()
+	if want, got := 1, len(inffs); want != got {
+		t.Errorf("GetClients() = %d, wanted %d", want, got)
+	}
+
+	// Setup the informers.
+	var infs []controller.Informer
+	ctx, infs = injection.Default.SetupInformers(ctx, &rest.Config{})
+
+	// We should see that a single informer was set up.
+	if want, got := 0, len(infs); want != got {
+		t.Errorf("SetupInformers() = %d, wanted %d", want, got)
+	}
+
+	// Get our informer from the context.
+	if inf := Get(ctx); inf == nil {
+		t.Error("Get() = nil, wanted non-nil")
+	}
 }
 `

@@ -31,7 +31,7 @@ import (
 
 // injectionTestGenerator produces a file of listers for a given GroupVersion and
 // type.
-type injectionGenerator struct {
+type injectionTestGenerator struct {
 	generator.DefaultGen
 	outputPackage               string
 	groupPkgName                string
@@ -45,13 +45,13 @@ type injectionGenerator struct {
 	groupInformerFactoryPackage string
 }
 
-var _ generator.Generator = &injectionGenerator{}
+var _ generator.Generator = &injectionTestGenerator{}
 
-func (g *injectionGenerator) Filter(c *generator.Context, t *types.Type) bool {
+func (g *injectionTestGenerator) Filter(c *generator.Context, t *types.Type) bool {
 	return t == g.typeToGenerate
 }
 
-func (g *injectionGenerator) Namers(c *generator.Context) namer.NameSystems {
+func (g *injectionTestGenerator) Namers(c *generator.Context) namer.NameSystems {
 	pluralExceptions := map[string]string{
 		"Endpoints": "Endpoints",
 	}
@@ -79,30 +79,12 @@ func (g *injectionGenerator) Namers(c *generator.Context) namer.NameSystems {
 	}
 }
 
-// ExceptionNamer allows you specify exceptional cases with exact names.  This allows you to have control
-// for handling various conflicts, like group and resource names for instance.
-type ExceptionNamer struct {
-	Exceptions map[string]string
-	KeyFunc    func(*types.Type) string
-
-	Delegate namer.Namer
-}
-
-// Name provides the requested name for a type.
-func (n *ExceptionNamer) Name(t *types.Type) string {
-	key := n.KeyFunc(t)
-	if exception, ok := n.Exceptions[key]; ok {
-		return exception
-	}
-	return n.Delegate.Name(t)
-}
-
-func (g *injectionGenerator) Imports(c *generator.Context) (imports []string) {
+func (g *injectionTestGenerator) Imports(c *generator.Context) (imports []string) {
 	imports = append(imports, g.imports.ImportLines()...)
 	return
 }
 
-func (g *injectionGenerator) GenerateType(c *generator.Context, t *types.Type, w io.Writer) error {
+func (g *injectionTestGenerator) GenerateType(c *generator.Context, t *types.Type, w io.Writer) error {
 	sw := generator.NewSnippetWriter(w, c, "{{", "}}")
 
 	klog.V(5).Infof("processing type %v", t)
@@ -152,26 +134,33 @@ func (g *injectionGenerator) GenerateType(c *generator.Context, t *types.Type, w
 	return sw.Error()
 }
 
-var injectionInformer = `
-func init() {
-	{{.injectionRegisterInformer|raw}}(withInformer)
-}
+var injectionInformerTest = `
+func TestRegistration(t *testing.T) {
+	ctx := context.Background()
 
-// key is used for associating the Informer inside the context.Context.
-type Key struct{}
-
-func withInformer(ctx context.Context) (context.Context, {{.controllerInformer|raw}}) {
-	f := {{.factoryGet|raw}}(ctx)
-	inf := f.{{.group}}().{{.version}}().{{.type|publicPlural}}()
-	return context.WithValue(ctx, Key{}, inf), inf.Informer()
-}	
-		
-// Get extracts the typed informer from the context.
-func Get(ctx context.Context) {{.informersTypedInformer|raw}} {
-	untyped := ctx.Value(Key{})
-	if untyped == nil {
-		return nil
+	// Get before registration
+	if empty := Get(ctx); empty != nil {
+		t.Errorf("Unexpected informer: %v", empty)
 	}
-	return untyped.({{.informersTypedInformer|raw}})
+
+	// Check how many informers have registered.
+	inffs := injection.Default.GetInformers()
+	if want, got := 1, len(inffs); want != got {
+		t.Errorf("GetInformers() = %d, wanted %d", want, got)
+	}
+
+	// Setup the informers.
+	var infs []controller.Informer
+	ctx, infs = injection.Default.SetupInformers(ctx, &rest.Config{})
+
+	// We should see that a single informer was set up.
+	if want, got := 1, len(infs); want != got {
+		t.Errorf("SetupInformers() = %d, wanted %d", want, got)
+	}
+
+	// Get our informer from the context.
+	if inf := Get(ctx); inf == nil {
+		t.Error("Get() = nil, wanted non-nil")
+	}
 }
 `
